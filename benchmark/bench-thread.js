@@ -11,8 +11,11 @@ const FJS = require('..')
 const stringify = FJS(benchmark.schema)
 
 suite
-  .add(benchmark.name, () => {
+  .add('fjs ' + benchmark.name, () => {
     stringify(benchmark.input)
+  })
+  .add('JSS ' + benchmark.name, () => {
+    JSON.stringify(benchmark.input)
   })
   .on('cycle', (event) => {
     parentPort.postMessage(String(event.target))

@@ -367,14 +367,14 @@ async function runBenchmark (benchmark) {
   const worker = new Worker(BENCH_THREAD_PATH, { workerData: benchmark })
 
   return new Promise((resolve, reject) => {
-    let result = null
+    const results = []
     worker.on('error', reject)
     worker.on('message', (benchResult) => {
-      result = benchResult
+      results.push(benchResult)
     })
     worker.on('exit', (code) => {
       if (code === 0) {
-        resolve(result)
+        resolve(results)
       } else {
         reject(new Error(`Worker stopped with exit code ${code}`))
       }
