@@ -10,8 +10,7 @@ const Location = require('./lib/location')
 const validate = require('./lib/schema-validator')
 const mergeSchemas = require('./lib/merge-schemas')
 
-let largeArraySize = 2e4
-let largeArrayMechanism = 'default'
+const DEFAULT_LARGE_ARRAY_SIZE = 2e4
 
 const NAMED_FRAGMENT_REF = /^#[a-z_][-\w._]*$/i
 
@@ -92,6 +91,14 @@ function getSchemaId (schema, rootSchemaId) {
     return schema.$id
   }
   return rootSchemaId
+}
+
+// a schema ref on a comment line of the generated code: a line terminator in a property name
+// would end the comment and turn the rest of the name into code. JSON.stringify covers \n and
+// \r, the two separators JS also treats as line terminators are escaped by hand
+const LINE_SEPARATORS = /[\u2028\u2029]/g
+function asComment (schemaRef) {
+  return JSON.stringify(schemaRef).replace(LINE_SEPARATORS, (c) => '\\u' + c.charCodeAt(0).toString(16))
 }
 
 function getSafeSchemaRef (context, location) {
@@ -190,9 +197,14 @@ function build (schema, options) {
     }
   }
 
+  // on the context, not the module: a build without these options must not inherit them
+  // from the build before it
+  context.largeArrayMechanism = 'default'
+  context.largeArraySize = DEFAULT_LARGE_ARRAY_SIZE
+
   if (options.largeArrayMechanism) {
     if (validLargeArrayMechanisms.has(options.largeArrayMechanism)) {
-      largeArrayMechanism = options.largeArrayMechanism
+      context.largeArrayMechanism = options.largeArrayMechanism
     } else {
       throw new Error(`Unsupported large array mechanism ${options.largeArrayMechanism}`)
     }
@@ -203,11 +215,11 @@ function build (schema, options) {
     let parsedNumber
 
     if (largeArraySizeType === 'string' && Number.isFinite((parsedNumber = Number.parseInt(options.largeArraySize, 10)))) {
-      largeArraySize = parsedNumber
+      context.largeArraySize = parsedNumber
     } else if (largeArraySizeType === 'number' && Number.isInteger(options.largeArraySize)) {
-      largeArraySize = options.largeArraySize
+      context.largeArraySize = options.largeArraySize
     } else if (largeArraySizeType === 'bigint') {
-      largeArraySize = Number(options.largeArraySize)
+      context.largeArraySize = Number(options.largeArraySize)
     } else {
       throw new Error(`Unsupported large array size. Expected integer-like, got ${typeof options.largeArraySize} with value ${options.largeArraySize}`)
     }
@@ -633,7 +645,7 @@ function buildObject (context, location, input) {
     const schemaRef = getSafeSchemaRef(context, location)
 
     const functionCode = `
-      // ${schemaRef}
+      // ${asComment(schemaRef)}
       function ${functionName} (input) {
         const obj = ${toJSON('input')}
         if (obj === null) return ${nullable ? 'JSON_STR_NULL' : 'JSON_STR_EMPTY_OBJECT'}
@@ -693,14 +705,14 @@ function buildArray (context, location, input) {
 
     let functionCode = `
     function ${functionName} (obj) {
-      // ${schemaRef}
+      // ${asComment(schemaRef)}
       let json = ''
   `
 
     functionCode += `
     if (obj === null) return ${nullable ? 'JSON_STR_NULL' : 'JSON_STR_EMPTY_ARRAY'}
     if (!Array.isArray(obj)) {
-      throw new TypeError(\`The value of '${schemaRef}' does not match schema definition.\`)
+      throw new TypeError(${JSON.stringify(`The value of '${schemaRef}' does not match schema definition.`)})
     }
     const arrayLength = obj.length
   `
@@ -713,8 +725,8 @@ function buildArray (context, location, input) {
     `
     }
 
-    if (largeArrayMechanism === 'json-stringify') {
-      functionCode += `if (arrayLength >= ${largeArraySize}) return JSON.stringify(obj)\n`
+    if (context.largeArrayMechanism === 'json-stringify') {
+      functionCode += `if (arrayLength >= ${context.largeArraySize}) return JSON.stringify(obj)\n`
     }
 
     functionCode += `
@@ -785,7 +797,7 @@ function buildArray (context, location, input) {
     if (${objVar} === null) {
       json += ${nullable ? 'JSON_STR_NULL' : 'JSON_STR_EMPTY_ARRAY'}
     } else if (!Array.isArray(${objVar})) {
-      throw new TypeError(\`The value of '${safeSchemaRef}' does not match schema definition.\`)
+      throw new TypeError(${JSON.stringify(`The value of '${safeSchemaRef}' does not match schema definition.`)})
     } else {
       const arrayLength_${objVar} = ${objVar}.length
   `
@@ -798,8 +810,8 @@ function buildArray (context, location, input) {
     `
   }
 
-  if (largeArrayMechanism === 'json-stringify') {
-    inlinedCode += `if (arrayLength_${objVar} >= ${largeArraySize}) json += JSON.stringify(${objVar})\n else {`
+  if (context.largeArrayMechanism === 'json-stringify') {
+    inlinedCode += `if (arrayLength_${objVar} >= ${context.largeArraySize}) json += JSON.stringify(${objVar})\n else {`
   }
 
   inlinedCode += `
@@ -856,7 +868,7 @@ function buildArray (context, location, input) {
     json += JSON_STR_END_ARRAY
   `
 
-  if (largeArrayMechanism === 'json-stringify') {
+  if (context.largeArrayMechanism === 'json-stringify') {
     inlinedCode += '}'
   }
 
@@ -987,7 +999,7 @@ function buildMultiTypeSerializer (context, location, input) {
     }
   })
   code += `
-    else throw new TypeError(\`The value of '${getSafeSchemaRef(context, location)}' does not match schema definition.\`)
+    else throw new TypeError(${JSON.stringify(`The value of '${getSafeSchemaRef(context, location)}' does not match schema definition.`)})
   `
 
   return code
@@ -1228,14 +1240,14 @@ function buildOneOf (context, location, input) {
     context.validatorSchemaRefs.add(schemaRef)
 
     code += `
-      ${index === 0 ? 'if' : 'else if'}(validator.validate("${schemaRef}", ${input})) {
+      ${index === 0 ? 'if' : 'else if'}(validator.validate(${JSON.stringify(schemaRef)}, ${input})) {
         ${nestedResult}
       }
     `
   }
 
   code += `
-    else throw new TypeError(\`The value of '${getSafeSchemaRef(context, location)}' does not match schema definition.\`)
+    else throw new TypeError(${JSON.stringify(`The value of '${getSafeSchemaRef(context, location)}' does not match schema definition.`)})
   `
 
   return code
@@ -1278,7 +1290,7 @@ function buildIfThenElse (context, location, input) {
 
   if (!elseSchema) {
     return `
-      if (validator.validate("${ifSchemaRef}", ${input})) {
+      if (validator.validate(${JSON.stringify(ifSchemaRef)}, ${input})) {
         ${buildValue(context, thenMergedLocation, input)}
       } else {
         ${buildValue(context, rootLocation, input)}
@@ -1302,7 +1314,7 @@ function buildIfThenElse (context, location, input) {
   }
 
   return `
-    if (validator.validate("${ifSchemaRef}", ${input})) {
+    if (validator.validate(${JSON.stringify(ifSchemaRef)}, ${input})) {
       ${buildValue(context, thenMergedLocation, input)}
     } else {
       ${buildValue(context, elseMergedLocation, input)}

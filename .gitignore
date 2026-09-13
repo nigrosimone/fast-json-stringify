@@ -147,3 +147,6 @@ yarn.lock
 # editor files
 .vscode
 .idea
+
+# what the fuzzer writes to require back
+fuzz/standalone/
