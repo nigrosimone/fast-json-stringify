@@ -150,3 +150,7 @@ yarn.lock
 
 # what the fuzzer writes to require back
 fuzz/standalone/
+# AI
+.pi
+AGENTS.md
+CLAUDE.md
